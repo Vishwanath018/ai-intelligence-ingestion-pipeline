@@ -1,0 +1,57 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environment
+venv/
+.venv/
+env/
+
+# API keys and secrets
+.env
+.env.*
+!.env.example
+
+# IDE
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Python cache/testing
+.pytest_cache/
+.mypy_cache/
+.cache/
+
+# Temporary files
+tmp/
+temp/
+
+# Credentials
+credentials.json
+service-account.json
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Local datasets and generated data
+data/raw/*
+data/processed/*
+data/output/*
+
+# Large datasets
+*.csv
+*.parquet
+*.jsonl
+
+# Build files
+build/
+dist/
+*.egg-info/
