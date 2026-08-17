@@ -6,6 +6,7 @@ from src.extractors.content_extractor import ContentExtractor
 from src.freshness.validator import FreshnessValidator
 from src.entity_resolution.resolver import EntityResolver
 from src.github.star_tracker import GitHubStarTracker
+from src.storage.json_storage import JSONStorage
 
 
 class IntelligencePipeline:
@@ -16,18 +17,20 @@ class IntelligencePipeline:
         self.freshness = FreshnessValidator()
         self.resolver = EntityResolver()
         self.github = GitHubStarTracker()
+        self.storage = JSONStorage()
 
     async def run(self, urls: list[str]):
 
         print("Starting ingestion pipeline...")
 
-        # 1. Crawl
+        # 1. Crawl sources asynchronously
         crawl_results = await self.crawler.crawl(urls)
 
         print(f"Crawled: {len(crawl_results)} URLs")
 
         records = []
 
+        # 2. Process every crawled source
         for result in crawl_results:
 
             if result.error:
@@ -37,12 +40,12 @@ class IntelligencePipeline:
                 )
                 continue
 
-            # 2. Extract
+            # 3. Extract content
             extracted = self.extractor.extract(
                 result.text
             )
 
-            # 3. Display source information
+            # 4. Build normalized pipeline record
             record = {
                 "source_url": result.url,
                 "title": extracted.title,
@@ -60,6 +63,16 @@ class IntelligencePipeline:
             f"{len(records)} records"
         )
 
+        # 5. Persist results
+        output_path = self.storage.save(
+            "pipeline_results.json",
+            records,
+        )
+
+        print(
+            f"Saved output: {output_path}"
+        )
+
         return records
 
 
@@ -67,6 +80,9 @@ async def main():
 
     pipeline = IntelligencePipeline()
 
+    # Test URLs.
+    # These will later be replaced by the
+    # actual configured source URLs.
     urls = [
         "https://example.com",
         "https://www.python.org",
