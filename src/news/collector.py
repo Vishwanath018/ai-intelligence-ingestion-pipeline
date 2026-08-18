@@ -1,15 +1,46 @@
-import asyncio
+﻿import asyncio
 import re
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
+from urllib.parse import quote, urlparse
 
 import aiohttp
-
-from src.storage.output_manager import OutputManager
+from bs4 import BeautifulSoup
 
 
 class NewsCollector:
 
-    BASE_URL = "https://api.gdeltproject.org/api/v2/doc/doc"
+    GDELT_URL = (
+        "https://api.gdeltproject.org/api/v2/doc/doc"
+    )
+
+    RSS_FEEDS = [
+        (
+            "Google News AI",
+            "https://news.google.com/rss/search?"
+            "q=artificial+intelligence&hl=en-US&gl=US&ceid=US:en",
+        ),
+        (
+            "Google News Technology",
+            "https://news.google.com/rss/search?"
+            "q=technology&hl=en-US&gl=US&ceid=US:en",
+        ),
+        (
+            "Google News Machine Learning",
+            "https://news.google.com/rss/search?"
+            "q=machine+learning&hl=en-US&gl=US&ceid=US:en",
+        ),
+        (
+            "Google News Startups",
+            "https://news.google.com/rss/search?"
+            "q=AI+startups&hl=en-US&gl=US&ceid=US:en",
+        ),
+        (
+            "Google News Cybersecurity",
+            "https://news.google.com/rss/search?"
+            "q=cybersecurity&hl=en-US&gl=US&ceid=US:en",
+        ),
+    ]
 
     QUERIES = [
         "artificial intelligence",
@@ -23,19 +54,17 @@ class NewsCollector:
         "cybersecurity",
         "cloud computing",
         "robotics",
-        "science",
-        "healthcare",
-        "education",
-        "electric vehicles",
-        "space",
-        "semiconductors",
-        "renewable energy",
-        "economy",
-        "innovation",
     ]
 
-    def __init__(self, max_results=1000):
+    def __init__(
+        self,
+        max_results=1000,
+        request_timeout=8,
+        max_retries=1,
+    ):
         self.max_results = max_results
+        self.request_timeout = request_timeout
+        self.max_retries = max_retries
 
     @staticmethod
     def clean_url(url):
@@ -45,16 +74,27 @@ class NewsCollector:
 
         url = str(url).strip()
 
-        markdown = re.match(
-            r"^\[.*?\]\((https?://[^)]+)\)$",
-            url
+        match = re.match(
+            r"\[.*?\]\((https?://[^)]+)\)",
+            url,
         )
 
-        if markdown:
-            return markdown.group(1)
+        if match:
+            url = match.group(1)
 
-        if url.startswith("<") and url.endswith(">"):
-            url = url[1:-1].strip()
+        url = url.strip(
+            " \t\r\n<>\"'.,);]}"
+        )
+
+        if not url.startswith(
+            ("http://", "https://")
+        ):
+            return ""
+
+        parsed = urlparse(url)
+
+        if not parsed.netloc:
+            return ""
 
         return url
 
@@ -64,190 +104,202 @@ class NewsCollector:
         if not text:
             return ""
 
+        text = BeautifulSoup(
+            str(text),
+            "html.parser",
+        ).get_text(
+            separator=" ",
+            strip=True,
+        )
+
         text = re.sub(
             r"\s+",
             " ",
-            str(text)
+            text,
         )
 
         return text.strip()
 
-    async def fetch(
+    @staticmethod
+    def parse_date(value):
+
+        if not value:
+            return datetime.now(
+                timezone.utc
+            )
+
+        value = str(value).strip()
+
+        try:
+
+            if re.fullmatch(
+                r"\d{14}",
+                value,
+            ):
+                return datetime.strptime(
+                    value,
+                    "%Y%m%d%H%M%S",
+                ).replace(
+                    tzinfo=timezone.utc
+                )
+
+        except ValueError:
+            pass
+
+        try:
+
+            parsed = parsedate_to_datetime(
+                value
+            )
+
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(
+                    tzinfo=timezone.utc
+                )
+
+            return parsed.astimezone(
+                timezone.utc
+            )
+
+        except (
+            ValueError,
+            TypeError,
+        ):
+            pass
+
+        try:
+
+            parsed = datetime.fromisoformat(
+                value.replace(
+                    "Z",
+                    "+00:00",
+                )
+            )
+
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(
+                    tzinfo=timezone.utc
+                )
+
+            return parsed.astimezone(
+                timezone.utc
+            )
+
+        except ValueError:
+
+            return datetime.now(
+                timezone.utc
+            )
+
+    async def fetch_gdelt(
         self,
         session,
-        query
+        query,
     ):
 
-        params = {
-            "query": query,
-            "mode": "artlist",
-            "maxrecords": 250,
-            "format": "json",
-            "timespan": "3months",
-            "sort": "datedesc",
-        }
+        encoded_query = quote(query)
 
-        for attempt in range(6):
+        url = (
+            f"{self.GDELT_URL}"
+            f"?query={encoded_query}"
+            f"&mode=artlist"
+            f"&maxrecords=250"
+            f"&format=json"
+            f"&timespan=3months"
+            f"&sort=datedesc"
+        )
 
-            try:
+        try:
 
-                async with session.get(
-                    self.BASE_URL,
-                    params=params,
-                    timeout=90
-                ) as response:
+            async with session.get(
+                url
+            ) as response:
 
-                    if response.status == 429:
-
-                        wait_time = 10 * (
-                            attempt + 1
-                        )
-
-                        print(
-                            f"Rate limited. "
-                            f"Waiting {wait_time}s..."
-                        )
-
-                        await asyncio.sleep(
-                            wait_time
-                        )
-
-                        continue
-
-                    response.raise_for_status()
+                if response.status == 200:
 
                     return await response.json()
 
-            except (
-                aiohttp.ClientError,
-                asyncio.TimeoutError
-            ) as exc:
-
-                if attempt == 5:
+                if response.status == 429:
 
                     print(
-                        f"Request failed: {exc}"
+                        "GDELT rate limited."
                     )
 
                     return None
 
-                wait_time = 5 * (
-                    attempt + 1
-                )
-
                 print(
-                    f"Request error. "
-                    f"Retrying in {wait_time}s..."
+                    f"GDELT returned "
+                    f"HTTP {response.status}"
                 )
 
-                await asyncio.sleep(
-                    wait_time
-                )
+                return None
 
-        return None
+        except (
+            asyncio.TimeoutError,
+            aiohttp.ClientError,
+        ) as exc:
 
-    def parse_article(self, article):
+            print(
+                f"GDELT unavailable: "
+                f"{type(exc).__name__}"
+            )
 
-        title = self.clean_text(
-            article.get("title", "")
-        )
+            return None
+
+    def parse_gdelt_article(
+        self,
+        article,
+    ):
 
         url = self.clean_url(
-            article.get("url", "")
+            article.get("url")
         )
 
-        domain = self.clean_text(
-            article.get(
-                "domain",
-                "GDELT"
-            )
+        title = self.clean_text(
+            article.get("title")
         )
 
-        date_value = article.get(
-            "seendate",
-            ""
-        )
-
-        if not title or not url:
+        if not url or not title:
             return None
 
-        if not url.startswith(
-            ("http://", "https://")
-        ):
-            return None
-
-        published_date = None
-
-        if date_value:
-
-            try:
-
-                published_date = (
-                    datetime.strptime(
-                        date_value,
-                        "%Y%m%dT%H%M%SZ"
-                    ).replace(
-                        tzinfo=timezone.utc
-                    )
-                )
-
-            except ValueError:
-
-                try:
-
-                    published_date = (
-                        datetime.strptime(
-                            date_value,
-                            "%Y%m%dT%H%M%S"
-                        ).replace(
-                            tzinfo=timezone.utc
-                        )
-                    )
-
-                except ValueError:
-                    pass
-
-        if published_date is None:
-
-            published_date = datetime.now(
-                timezone.utc
-            )
-
-        text = self.clean_text(
-            article.get(
-                "snippet",
-                ""
-            )
+        domain = (
+            article.get("domain")
+            or urlparse(url).netloc
         )
-
-        if not text:
-            text = title
 
         return {
             "schemaVersion": "1.0",
             "recordType": "NEWS",
             "source": {
-                "name": domain,
-                "url": url
+                "name": self.clean_text(
+                    domain
+                ),
+                "url": url,
             },
             "content": {
                 "title": title,
-                "date": published_date,
-                "text": text,
-                "url": url
+                "date": self.parse_date(
+                    article.get("seendate")
+                    or article.get("published")
+                ),
+                "text": self.clean_text(
+                    article.get("snippet")
+                    or title
+                ),
+                "url": url,
             },
             "collectedAt": datetime.now(
                 timezone.utc
-            )
+            ),
         }
 
-    async def collect(self):
-
-        records = []
-        seen_urls = set()
+    async def try_gdelt(
+        self,
+        records,
+    ):
 
         timeout = aiohttp.ClientTimeout(
-            total=90
+            total=self.request_timeout
         )
 
         headers = {
@@ -255,47 +307,46 @@ class NewsCollector:
                 "AI-Intelligence-Ingestion-Pipeline/1.0"
         }
 
-        connector = aiohttp.TCPConnector(
-            limit=1
-        )
-
         async with aiohttp.ClientSession(
             timeout=timeout,
             headers=headers,
-            connector=connector
         ) as session:
 
             for query in self.QUERIES:
 
-                if len(records) >= self.max_results:
-                    break
-
                 print(
-                    f"\nFetching news: {query}"
+                    f"\nGDELT query: {query}"
                 )
 
-                data = await self.fetch(
+                data = await self.fetch_gdelt(
                     session,
-                    query
+                    query,
                 )
 
                 if data is None:
-                    continue
+
+                    print(
+                        "GDELT failed. "
+                        "Switching immediately "
+                        "to RSS fallback."
+                    )
+
+                    return False
 
                 articles = data.get(
                     "articles",
                     []
                 )
 
-                new_count = 0
-
                 for article in articles:
 
-                    record = self.parse_article(
-                        article
+                    record = (
+                        self.parse_gdelt_article(
+                            article
+                        )
                     )
 
-                    if record is None:
+                    if not record:
                         continue
 
                     url = record[
@@ -304,147 +355,385 @@ class NewsCollector:
                         "url"
                     ]
 
-                    if url in seen_urls:
-                        continue
+                    records[url] = record
 
-                    seen_urls.add(url)
-                    records.append(record)
-                    new_count += 1
+                    if (
+                        len(records)
+                        >= self.max_results
+                    ):
+                        return True
 
-                    if len(records) >= self.max_results:
-                        break
+        return True
 
-                print(
-                    f"New articles: {new_count}"
+    def parse_rss_item(
+        self,
+        item,
+        feed_name,
+    ):
+
+        title_element = item.find(
+            "title"
+        )
+
+        if title_element is None:
+            return None
+
+        title = self.clean_text(
+            title_element.get_text()
+        )
+
+        if not title:
+            return None
+
+        link_element = item.find(
+            "link"
+        )
+
+        url = ""
+
+        if link_element:
+
+            url = self.clean_url(
+                link_element.get_text(
+                    strip=True
+                )
+            )
+
+            if not url:
+
+                url = self.clean_url(
+                    link_element.get(
+                        "href",
+                        ""
+                    )
                 )
 
-                print(
-                    f"Total unique news: "
-                    f"{len(records)}"
+        if not url:
+            return None
+
+        description_element = (
+            item.find("description")
+        )
+
+        description = ""
+
+        if description_element:
+
+            description = self.clean_text(
+                description_element.get_text()
+            )
+
+        pub_element = (
+            item.find("pubDate")
+            or item.find("published")
+            or item.find("updated")
+        )
+
+        date_value = (
+            pub_element.get_text(
+                strip=True
+            )
+            if pub_element
+            else None
+        )
+
+        return {
+            "schemaVersion": "1.0",
+            "recordType": "NEWS",
+            "source": {
+                "name": (
+                    urlparse(url).netloc
+                    or feed_name
+                ),
+                "url": url,
+            },
+            "content": {
+                "title": title,
+                "date": self.parse_date(
+                    date_value
+                ),
+                "text": (
+                    description
+                    or title
+                ),
+                "url": url,
+            },
+            "collectedAt": datetime.now(
+                timezone.utc
+            ),
+        }
+
+    async def fetch_rss(
+        self,
+        session,
+        feed_name,
+        feed_url,
+    ):
+
+        try:
+
+            async with session.get(
+                feed_url,
+                allow_redirects=True,
+            ) as response:
+
+                if response.status != 200:
+
+                    print(
+                        f"{feed_name}: "
+                        f"HTTP {response.status}"
+                    )
+
+                    return []
+
+                xml = await response.text(
+                    errors="ignore"
                 )
 
-                await asyncio.sleep(8)
+                soup = BeautifulSoup(
+                    xml,
+                    "xml",
+                )
 
-        return records[:self.max_results]
+                items = soup.find_all(
+                    "item"
+                )
 
-    def validate(self, records):
+                records = []
 
-        urls = [
-            record[
-                "content"
-            ][
-                "url"
+                for item in items:
+
+                    record = (
+                        self.parse_rss_item(
+                            item,
+                            feed_name,
+                        )
+                    )
+
+                    if record:
+
+                        records.append(
+                            record
+                        )
+
+                return records
+
+        except (
+            asyncio.TimeoutError,
+            aiohttp.ClientError,
+        ) as exc:
+
+            print(
+                f"{feed_name}: "
+                f"{type(exc).__name__}"
+            )
+
+            return []
+
+    async def collect_rss(
+        self,
+        records,
+    ):
+
+        print(
+            "\n"
+            + "=" * 60
+        )
+
+        print(
+            "RSS FALLBACK - REAL-TIME NEWS"
+        )
+
+        print(
+            "=" * 60
+        )
+
+        timeout = aiohttp.ClientTimeout(
+            total=10
+        )
+
+        headers = {
+            "User-Agent":
+                "AI-Intelligence-Ingestion-Pipeline/1.0"
+        }
+
+        async with aiohttp.ClientSession(
+            timeout=timeout,
+            headers=headers,
+        ) as session:
+
+            tasks = [
+                self.fetch_rss(
+                    session,
+                    name,
+                    url,
+                )
+                for name, url
+                in self.RSS_FEEDS
             ]
-            for record in records
+
+            results = await asyncio.gather(
+                *tasks
+            )
+
+        for feed_records in results:
+
+            for record in feed_records:
+
+                url = record[
+                    "content"
+                ][
+                    "url"
+                ]
+
+                if url not in records:
+
+                    records[url] = record
+
+                if (
+                    len(records)
+                    >= self.max_results
+                ):
+                    break
+
+            if (
+                len(records)
+                >= self.max_results
+            ):
+                break
+
+        print(
+            f"RSS unique records: "
+            f"{len(records)}"
+        )
+
+        return records
+
+    async def collect(self):
+
+        print(
+            "Starting news collection..."
+        )
+
+        records = {}
+
+        gdelt_success = (
+            await self.try_gdelt(
+                records
+            )
+        )
+
+        if not gdelt_success:
+
+            records = (
+                await self.collect_rss(
+                    records
+                )
+            )
+
+        records = list(
+            records.values()
+        )[
+            :self.max_results
         ]
 
-        invalid = []
+        print(
+            "\nFINAL NEWS COUNT: "
+            f"{len(records)}"
+        )
+
+        return records
+
+    def validate(
+        self,
+        records,
+    ):
+
+        urls = []
+        invalid = 0
 
         for record in records:
+
+            if record.get(
+                "recordType"
+            ) != "NEWS":
+
+                invalid += 1
+                continue
 
             content = record.get(
                 "content",
                 {}
             )
 
-            url = content.get(
-                "url",
-                ""
+            url = self.clean_url(
+                content.get("url")
             )
 
-            if (
-                record.get("recordType")
-                != "NEWS"
-            ):
-                invalid.append(record)
+            title = self.clean_text(
+                content.get("title")
+            )
+
+            if not url or not title:
+
+                invalid += 1
                 continue
 
-            if not content.get("title"):
-                invalid.append(record)
-                continue
+            urls.append(url)
 
-            if not content.get("date"):
-                invalid.append(record)
-                continue
-
-            if not content.get("text"):
-                invalid.append(record)
-                continue
-
-            if not url.startswith(
-                ("http://", "https://")
-            ):
-                invalid.append(record)
-                continue
-
-            if re.match(
-                r"^\[.*?\]\(https?://",
-                url
-            ):
-                invalid.append(record)
-
-        print("\nVALIDATION")
-        print(f"Records: {len(records)}")
-        print(
-            f"Unique URLs: {len(set(urls))}"
+        duplicates = (
+            len(urls)
+            - len(set(urls))
         )
+
+        print(
+            "\nVALIDATION"
+        )
+
+        print(
+            f"Records: {len(records)}"
+        )
+
+        print(
+            f"Unique URLs: "
+            f"{len(set(urls))}"
+        )
+
         print(
             f"Duplicate URLs: "
-            f"{len(urls) - len(set(urls))}"
+            f"{duplicates}"
         )
+
         print(
-            f"Invalid records: {len(invalid)}"
+            f"Invalid records: "
+            f"{invalid}"
         )
 
         return (
-            len(records) == self.max_results
-            and len(set(urls)) == len(urls)
-            and len(invalid) == 0
+            len(records) > 0
+            and duplicates == 0
+            and invalid == 0
         )
 
 
 async def main():
 
-    print(
-        "Starting news collection..."
-    )
-
     collector = NewsCollector(
-        max_results=1000
+        max_results=20
     )
 
     records = await collector.collect()
 
-    print(
-        f"\nFINAL NEWS COUNT: "
-        f"{len(records)}"
-    )
-
-    if not collector.validate(records):
-
-        print(
-            "\nValidation failed."
-        )
-
-        return
-
-    output = OutputManager()
-
-    path = output.save_json(
-        "news.json",
+    valid = collector.validate(
         records
     )
 
     print(
-        f"\nSaved news to: {path}"
+        f"\nValidation result: "
+        f"{valid}"
     )
-
-    print("\nFirst record:")
-    print(records[0])
-
-    print("\nLast record:")
-    print(records[-1])
 
 
 if __name__ == "__main__":
+
     asyncio.run(main())

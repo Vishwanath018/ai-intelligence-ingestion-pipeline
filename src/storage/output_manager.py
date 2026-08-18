@@ -1,23 +1,37 @@
-import json
+﻿import json
 from pathlib import Path
 
 
 class OutputManager:
 
-    def __init__(self, output_dir="data/output"):
-        self.output_dir = Path(output_dir)
+    def __init__(
+        self,
+        output_dir="data/output"
+    ):
+        self.output_dir = Path(
+            output_dir
+        )
+
         self.output_dir.mkdir(
             parents=True,
             exist_ok=True
         )
 
-    def save_json(self, filename, records):
-        path = self.output_dir / filename
+    def save_json(
+        self,
+        filename,
+        records
+    ):
+        path = (
+            self.output_dir
+            / filename
+        )
 
         with path.open(
             "w",
             encoding="utf-8"
         ) as file:
+
             json.dump(
                 records,
                 file,
@@ -37,29 +51,72 @@ class OutputManager:
         news,
         entity_mapping
     ):
+
+        unified = []
+
+        unified.extend(
+            startups
+        )
+
+        unified.extend(
+            products
+        )
+
+        unified.extend(
+            research_papers
+        )
+
+        unified.extend(
+            jobs
+        )
+
+        unified.extend(
+            news
+        )
+
         return {
             "startups": self.save_json(
                 "startups.json",
                 startups
             ),
+
             "products": self.save_json(
                 "products.json",
                 products
             ),
+
             "research_papers": self.save_json(
                 "research_papers.json",
                 research_papers
             ),
+
             "jobs": self.save_json(
                 "jobs.json",
                 jobs
             ),
+
             "news": self.save_json(
                 "news.json",
                 news
             ),
+
             "entity_mapping": self.save_json(
                 "entity_mapping_log.json",
                 entity_mapping
+            ),
+
+            "unified_intelligence": self.save_json(
+                "unified_intelligence.json",
+                unified
             )
         }
+
+    def save_unified(
+        self,
+        records
+    ):
+
+        return self.save_json(
+            "unified_intelligence.json",
+            records
+        )

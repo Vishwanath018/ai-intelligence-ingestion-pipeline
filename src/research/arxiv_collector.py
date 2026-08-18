@@ -1,10 +1,12 @@
-import asyncio
+﻿import asyncio
+import re
 from datetime import datetime, timezone
 from urllib.parse import quote
 
 import aiohttp
 import feedparser
 
+from src.github.repository_discovery import GitHubRepositoryDiscovery
 from src.github.star_tracker import GitHubStarTracker
 from src.storage.output_manager import OutputManager
 
@@ -13,12 +15,22 @@ class ArxivCollector:
 
     API_URL = "https://export.arxiv.org/api/query"
 
+    GITHUB_PATTERN = re.compile(
+        r"https?://github\.com/[^/\s<>\"']+/[^/\s<>\"']+",
+        re.IGNORECASE
+    )
+
     def __init__(
         self,
         max_results=1000,
+        enable_github_discovery=True
     ):
         self.max_results = max_results
         self.github = GitHubStarTracker()
+        self.discovery = GitHubRepositoryDiscovery()
+        self.enable_github_discovery = (
+            enable_github_discovery
+        )
 
     async def fetch(
         self,
@@ -26,7 +38,6 @@ class ArxivCollector:
         query,
         start,
     ):
-
         params = (
             f"?search_query={quote(query)}"
             f"&start={start}"
@@ -71,9 +82,51 @@ class ArxivCollector:
 
         return None
 
+    def extract_explicit_github_url(
+        self,
+        entry
+    ):
+
+        candidates = []
+
+        for link in entry.get(
+            "links",
+            []
+        ):
+
+            href = link.get(
+                "href",
+                ""
+            )
+
+            if href:
+                candidates.append(href)
+
+        candidates.extend([
+            entry.get("summary", ""),
+            entry.get("comment", ""),
+            entry.get("journal_ref", ""),
+        ])
+
+        for candidate in candidates:
+
+            matches = (
+                self.GITHUB_PATTERN.findall(
+                    candidate
+                )
+            )
+
+            if matches:
+
+                return matches[0].rstrip(
+                    ".,);]}"
+                )
+
+        return None
+
     def parse(
         self,
-        content,
+        content
     ):
 
         feed = feedparser.parse(
@@ -104,26 +157,7 @@ class ArxivCollector:
                     )
 
                 except ValueError:
-
                     published_date = None
-
-            github_url = None
-
-            for link in entry.get(
-                "links",
-                []
-            ):
-
-                href = link.get(
-                    "href",
-                    ""
-                )
-
-                if "github.com" in href.lower():
-
-                    github_url = href
-
-                    break
 
             paper_url = entry.get(
                 "id",
@@ -152,52 +186,95 @@ class ArxivCollector:
             if published_date is None:
                 continue
 
-            record = {
-                "schemaVersion": "1.0",
-                "recordType": "RESEARCH_PAPER",
-                "source": {
-                    "name": "ArXiv",
-                    "url": paper_url,
-                },
-                "content": {
-                    "title": title,
-                    "authors": authors,
-                    "paper_url": paper_url,
-                    "github_url": github_url,
-                    "github_stars": None,
-                    "published_date": published_date,
-                },
-                "collectedAt": datetime.now(
-                    timezone.utc
-                ),
-            }
+            github_url = (
+                self.extract_explicit_github_url(
+                    entry
+                )
+            )
 
             records.append(
-                record
+                {
+                    "schemaVersion": "1.0",
+                    "recordType": "RESEARCH_PAPER",
+                    "source": {
+                        "name": "ArXiv",
+                        "url": paper_url
+                    },
+                    "content": {
+                        "title": title,
+                        "authors": authors,
+                        "paper_url": paper_url,
+                        "github_url": github_url,
+                        "github_stars": None,
+                        "published_date": published_date
+                    },
+                    "collectedAt": datetime.now(
+                        timezone.utc
+                    )
+                }
             )
 
         return records
 
-    async def enrich_github_stars(
+    async def discover_github(
         self,
-        records,
+        records
     ):
 
-        semaphore = asyncio.Semaphore(
-            5
-        )
+        semaphore = asyncio.Semaphore(3)
 
         async def enrich(
-            record,
+            record
         ):
 
-            github_url = record[
+            content = record[
                 "content"
-            ][
-                "github_url"
             ]
 
+            github_url = content.get(
+                "github_url"
+            )
+
             if not github_url:
+
+                if not self.enable_github_discovery:
+                    return record
+
+                async with semaphore:
+
+                    try:
+
+                        result = (
+                            await self.discovery.discover(
+                                content[
+                                    "title"
+                                ]
+                            )
+                        )
+
+                        if result:
+
+                            github_url = result.get(
+                                "github_url"
+                            )
+
+                            if github_url:
+
+                                content[
+                                    "github_url"
+                                ] = github_url
+
+                                content[
+                                    "github_stars"
+                                ] = result.get(
+                                    "github_stars"
+                                )
+
+                                return record
+
+                    except Exception:
+                        pass
+
                 return record
 
             async with semaphore:
@@ -210,17 +287,12 @@ class ArxivCollector:
                         )
                     )
 
-                    record[
-                        "content"
-                    ][
+                    content[
                         "github_stars"
                     ] = stars
 
                 except Exception:
-
-                    record[
-                        "content"
-                    ][
+                    content[
                         "github_stars"
                     ] = None
 
@@ -235,7 +307,7 @@ class ArxivCollector:
 
     async def collect(
         self,
-        query="cat:cs.AI",
+        query="cat:cs.AI"
     ):
 
         records = []
@@ -244,13 +316,14 @@ class ArxivCollector:
             total=60
         )
 
+        headers = {
+            "User-Agent":
+                "AI-Intelligence-Ingestion-Pipeline/1.0"
+        }
+
         async with aiohttp.ClientSession(
             timeout=timeout,
-            headers={
-                "User-Agent":
-                    "AI-Intelligence-"
-                    "Ingestion-Pipeline/1.0"
-            }
+            headers=headers
         ) as session:
 
             for start in range(
@@ -272,19 +345,15 @@ class ArxivCollector:
                 content = await self.fetch(
                     session,
                     query,
-                    start,
+                    start
                 )
 
                 if content:
 
-                    parsed_records = (
+                    records.extend(
                         self.parse(
                             content
                         )
-                    )
-
-                    records.extend(
-                        parsed_records
                     )
 
                 await asyncio.sleep(
@@ -305,7 +374,9 @@ class ArxivCollector:
 
         records = list(
             unique.values()
-        )[:self.max_results]
+        )[
+            :self.max_results
+        ]
 
         print(
             f"Unique papers: "
@@ -313,7 +384,7 @@ class ArxivCollector:
         )
 
         records = await (
-            self.enrich_github_stars(
+            self.discover_github(
                 records
             )
         )
@@ -322,7 +393,7 @@ class ArxivCollector:
 
     def validate(
         self,
-        records,
+        records
     ):
 
         urls = [
@@ -334,15 +405,6 @@ class ArxivCollector:
             for record in records
         ]
 
-        titles = [
-            record[
-                "content"
-            ][
-                "title"
-            ]
-            for record in records
-        ]
-
         invalid_records = []
 
         for record in records:
@@ -350,8 +412,7 @@ class ArxivCollector:
             if (
                 record.get(
                     "recordType"
-                )
-                != "RESEARCH_PAPER"
+                ) != "RESEARCH_PAPER"
             ):
 
                 invalid_records.append(
@@ -437,11 +498,6 @@ class ArxivCollector:
         )
 
         print(
-            f"Empty titles: "
-            f"{sum(not title for title in titles)}"
-        )
-
-        print(
             f"GitHub URLs: "
             f"{github_urls}"
         )
@@ -470,16 +526,11 @@ async def main():
     )
 
     collector = ArxivCollector(
-        max_results=1000
+        max_results=20
     )
 
     records = await collector.collect(
         query="cat:cs.AI"
-    )
-
-    print(
-        f"\nCollected "
-        f"{len(records)} research papers"
     )
 
     valid = collector.validate(
@@ -491,41 +542,42 @@ async def main():
         f"{valid}"
     )
 
-    if not valid:
+    if records:
+
+        github_records = [
+            record
+            for record in records
+            if record[
+                "content"
+            ].get(
+                "github_url"
+            )
+        ]
 
         print(
-            "Validation failed."
+            "\nGitHub-enriched papers:"
         )
 
-        return
+        for record in github_records[:10]:
 
-    output = OutputManager()
+            content = record[
+                "content"
+            ]
 
-    path = output.save_json(
-        "research_papers.json",
-        records
-    )
+            print(
+                "\nTitle:",
+                content["title"]
+            )
 
-    print(
-        f"\nSaved research papers to: "
-        f"{path}"
-    )
+            print(
+                "GitHub:",
+                content["github_url"]
+            )
 
-    print(
-        "\nFirst record:"
-    )
-
-    print(
-        records[0]
-    )
-
-    print(
-        "\nLast record:"
-    )
-
-    print(
-        records[-1]
-    )
+            print(
+                "Stars:",
+                content["github_stars"]
+            )
 
 
 if __name__ == "__main__":
