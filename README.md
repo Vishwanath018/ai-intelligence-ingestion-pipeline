@@ -1,81 +1,71 @@
-# AI Intelligence Ingestion & Entity Resolution Pipeline
+# AI Intelligence Ingestion Pipeline
 
-A scalable, fault-tolerant data intelligence pipeline for ingesting, normalizing, enriching, and resolving information across AI startups, products, research papers, AI jobs, and AI news.
+A Python project I built to collect and organize AI-related information from different real-world sources.
 
-## Project Overview
+The idea behind this project is simple:
 
-This project is designed as a production-oriented data ingestion pipeline capable of collecting structured intelligence from multiple legitimate data sources.
+> Instead of manually checking AI startups, products, research papers, jobs, and news from different places, I wanted one pipeline that could collect, validate, connect, and store this information.
 
-The system focuses on:
+I built this mainly to learn how a real data ingestion system works when APIs fail, websites respond slowly, data is duplicated, and company names appear in different forms.
 
-- Asynchronous data acquisition
-- Concurrent web crawling
-- Structured data extraction
-- Multi-tier LLM orchestration
-- Intelligent payload chunking
-- Rate-limit handling
-- 24-hour freshness validation
-- Research paper and GitHub repository correlation
-- Dynamic GitHub star tracking
-- Deterministic entity resolution
-- Source URL traceability
-- Scalable architecture for 500,000+ records
+---
 
-## Project Objectives
+## What I built
 
-The pipeline targets six major data categories:
+The pipeline collects five types of AI information:
 
-1. AI Startups
-2. AI Products
-3. AI Research Papers
-4. AI Jobs
-5. AI News
-6. Entity Mapping
+- AI Startups
+- AI Products
+- AI Research Papers
+- AI Jobs
+- AI News
 
-The target output includes:
+After collecting the data, it performs validation, entity resolution, GitHub enrichment, and finally stores everything as structured JSON.
 
-- Minimum 1,000 unique startup records
-- Minimum 1,000 unique product records
-- Minimum 1,000 unique research paper records
-- GitHub metrics for research papers where available
-- AI jobs published within the previous 24 hours
-- AI news published within the previous 24 hours
-- Raw-to-canonical entity mapping
+---
 
-## System Architecture
+# Architecture
+
+The overall flow of the project is:
 
 ```text
-Data Sources
-     |
-     v
-Async Crawler
-     |
-     v
-Content Extraction
-     |
-     v
-LLM Orchestrator
-     |
-     v
-Schema Validation
-     |
-     +-------------------+
-     |                   |
-     v                   v
-Entity Resolution   Freshness Engine
-     |                   |
-     +---------+---------+
-               |
-               v
-           Storage
-               |
-       +-------+-------+
-       |       |       |
-    Startups Products Papers
-       |       |       |
-       +-------+-------+
-               |
-         Jobs / News
-               |
-               v
-        Google Sheets
+                    REAL-WORLD SOURCES
+                           |
+        +------------------+------------------+
+        |                  |                  |
+        v                  v                  v
+    STARTUPS           PRODUCTS           RESEARCH
+        |                  |                  |
+        |                  |                  |
+        +------------------+------------------+
+                           |
+                  +--------+--------+
+                  |                 |
+                  v                 v
+                JOBS              NEWS
+                  |                 |
+                  +--------+--------+
+                           |
+                           v
+                  DATA COLLECTION
+                           |
+                           v
+                 CLEANING + VALIDATION
+                           |
+                           v
+                  ENTITY RESOLUTION
+                           |
+                           v
+              GITHUB DISCOVERY / STARS
+                           |
+                           v
+                    DATA UNIFICATION
+                           |
+                           v
+                    OUTPUT MANAGER
+                           |
+                           v
+              STRUCTURED JSON DATA
+                           |
+                           v
+                    AUTOMATED TESTS
